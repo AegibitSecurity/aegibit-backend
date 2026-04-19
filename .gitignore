@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+
+# Database
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# Env
+.env
+
+# OS
+.DS_Store
+
+# Testing
+.pytest_cache/
+
+# Migrations cache
+*.pyc
+
+# Excel / uploads
+*.xlsx
