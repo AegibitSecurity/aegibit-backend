@@ -105,7 +105,7 @@ app.add_middleware(StandardResponseMiddleware)
 
 # ── Health check (outside versioned prefix, no auth, no envelope) ─────────────
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"status": "Aegibit Backend Live"}
 

@@ -192,7 +192,15 @@ async def get_current_user(
         def my_endpoint(auth: AuthContext = Depends(get_current_user)):
             # auth.user_id, auth.org_id, auth.role, auth.role_name
     """
+    # Web: read from HTTP-only cookie (set by login endpoint)
     token = request.cookies.get("access_token")
+
+    # Native/mobile (Capacitor): read from Authorization: Bearer <token>
+    if not token:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 

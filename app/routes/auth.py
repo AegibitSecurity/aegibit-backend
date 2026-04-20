@@ -86,7 +86,9 @@ def login(
         path="/",
     )
 
-    return LoginResponse(user=UserResponse.model_validate(user))
+    # Include token in response body for native/mobile clients (Capacitor).
+    # Web clients use the cookie above and ignore this field.
+    return LoginResponse(user=UserResponse.model_validate(user), access_token=token)
 
 
 # ── Logout ────────────────────────────────────────────────────────────────────

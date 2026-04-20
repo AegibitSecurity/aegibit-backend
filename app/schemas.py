@@ -31,6 +31,7 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     user: UserResponse
+    access_token: Optional[str] = None  # native/mobile clients only — web uses cookie
 
 
 class CreateUserRequest(BaseModel):
