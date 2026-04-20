@@ -11,15 +11,17 @@ Architecture:
 """
 
 from contextlib import asynccontextmanager
+import logging
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 
-from fastapi import FastAPI, Depends, Request
+from fastapi import FastAPI, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 from app.database import engine, Base, SessionLocal, get_db
@@ -27,6 +29,8 @@ from app.seed import seed_database
 from app.database_migrations import run_all_migrations
 from app.middleware import StandardResponseMiddleware
 from app.limiter import limiter
+
+logger = logging.getLogger(__name__)
 
 # ── Import all route modules ──────────────────────────────────────────────────
 from app.routes import (
@@ -49,11 +53,32 @@ if settings.SENTRY_DSN:
     )
 
 
+# ── Request body size limit middleware ───────────────────────────────────────
+# Rejects requests whose Content-Length exceeds MAX_REQUEST_BODY_BYTES.
+# File upload route (/upload-excel) is exempt — it sets its own 60s timeout.
+
+class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if (
+            content_length
+            and "/upload-excel" not in request.url.path
+            and int(content_length) > settings.MAX_REQUEST_BODY_BYTES
+        ):
+            return Response(
+                content='{"detail": "Request body too large"}',
+                status_code=413,
+                media_type="application/json",
+            )
+        return await call_next(request)
+
+
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: run migrations, create tables, seed. Shutdown: no-op."""
+    logger.info("Starting AEGIBIT Flow %s [%s]", settings.APP_VERSION, settings.ENVIRONMENT)
     run_all_migrations(engine)
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
@@ -61,7 +86,9 @@ async def lifespan(app: FastAPI):
         seed_database(db)
     finally:
         db.close()
+    logger.info("Startup complete — database ready")
     yield
+    logger.info("Shutdown complete")
 
 
 # ── Application ───────────────────────────────────────────────────────────────
@@ -100,12 +127,42 @@ app.add_middleware(
 # Wraps all /api/v1 JSON responses in { success, data, error, request_id }.
 
 app.add_middleware(StandardResponseMiddleware)
+app.add_middleware(RequestSizeLimitMiddleware)
 
-# ── Health check (outside versioned prefix, no auth, no envelope) ─────────────
+# ── Health checks (no auth, no envelope) ─────────────────────────────────────
 
 @app.api_route("/", methods=["GET", "HEAD"])
 def root():
-    return {"status": "Aegibit Backend Live"}
+    return {"status": "ok", "version": settings.APP_VERSION}
+
+
+@app.api_route("/health", methods=["GET", "HEAD"])
+def health(db=Depends(get_db)):
+    """
+    Deep health check — verifies DB connectivity.
+    Load balancers and uptime monitors should call this.
+    Returns 200 when healthy, 503 when the database is unreachable.
+    """
+    from sqlalchemy import text
+    try:
+        db.execute(text("SELECT 1"))
+        db_status = "connected"
+    except Exception as exc:
+        logger.error("Health check: database unreachable — %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "unhealthy",
+                "database": "unreachable",
+                "version": settings.APP_VERSION,
+            },
+        )
+    return {
+        "status": "healthy",
+        "database": db_status,
+        "version": settings.APP_VERSION,
+        "environment": settings.ENVIRONMENT,
+    }
 
 
 # ── Versioned routers (/api/v1/...) ──────────────────────────────────────────

@@ -18,13 +18,14 @@ Role access:
   variants     → SALES+
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 from typing import Annotated
 from pydantic import ValidationError
 
 from app.database import get_db
 from app.auth import AuthContext, get_current_user, require_role, Role
+from app.limiter import limiter
 from app.models import Deal, Task, DealEvent
 from app.services import deal_service
 from app.services.deal_service import (
@@ -75,7 +76,9 @@ def analyze(
 # ── POST /create-deal — full creation pipeline ──────────────────────────────
 
 @router.post("/create-deal", response_model=DealResponse, responses={400: {"model": ValidationErrorResponse}})
+@limiter.limit("30/minute")
 async def create(
+    request: Request,
     req: DealCreateRequest,
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -134,7 +137,9 @@ async def create(
 # ── POST /approve-gm ────────────────────────────────────────────────────────
 
 @router.post("/approve-gm", response_model=DealResponse)
+@limiter.limit("60/minute")
 async def approve_gm(
+    request: Request,
     req: ApprovalRequest,
     auth: AuthContext = Depends(require_role(Role.GM)),
     db: Session = Depends(get_db),
@@ -149,7 +154,9 @@ async def approve_gm(
 # ── POST /approve-director ──────────────────────────────────────────────────
 
 @router.post("/approve-director", response_model=DealResponse)
+@limiter.limit("60/minute")
 async def approve_director(
+    request: Request,
     req: ApprovalRequest,
     auth: AuthContext = Depends(require_role(Role.DIRECTOR)),
     db: Session = Depends(get_db),
@@ -164,7 +171,9 @@ async def approve_director(
 # ── POST /reject ────────────────────────────────────────────────────────────
 
 @router.post("/reject", response_model=DealResponse)
+@limiter.limit("60/minute")
 async def reject(
+    request: Request,
     req: ApprovalRequest,
     auth: AuthContext = Depends(require_role(Role.GM)),
     db: Session = Depends(get_db),

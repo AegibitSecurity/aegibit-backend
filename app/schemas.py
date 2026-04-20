@@ -25,8 +25,14 @@ class UserResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
+
+    @validator('password')
+    def password_not_empty(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError('Password is required')
+        return v
 
 
 class LoginResponse(BaseModel):
@@ -35,7 +41,7 @@ class LoginResponse(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
-    email: str
+    email: EmailStr
     password: str
     role: str  # GM | DIRECTOR | SALES (never ADMIN)
     organization_id: str
@@ -52,14 +58,9 @@ class CreateUserRequest(BaseModel):
     def validate_password(cls, v):
         if len(v) < 8:
             raise ValueError("Password must be at least 8 characters")
+        if len(v) > 128:
+            raise ValueError("Password must be 128 characters or fewer")
         return v
-
-    @validator('email')
-    def validate_email(cls, v):
-        normalized = v.strip().lower()
-        if "@" not in normalized:
-            raise ValueError("Invalid email format")
-        return normalized
 
 
 class ChangePasswordRequest(BaseModel):

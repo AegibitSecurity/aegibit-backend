@@ -210,7 +210,9 @@ def toggle_user_status(
 # ── Change Password ──────────────────────────────────────────────────────────
 
 @router.post("/auth/change-password")
+@limiter.limit("5/minute")
 def change_password(
+    request: Request,
     body: ChangePasswordRequest,
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),

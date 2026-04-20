@@ -106,6 +106,7 @@ class StandardResponseMiddleware(BaseHTTPMiddleware):
         if not path.startswith("/api/v1"):
             response = await call_next(request)
             response.headers["X-Request-ID"] = request_id
+            response.headers["X-API-Version"] = "1.0.0"
             return response
 
         # ── Process request ────────────────────────────────────────────────────
@@ -157,6 +158,7 @@ class StandardResponseMiddleware(BaseHTTPMiddleware):
         headers = dict(response.headers)
         headers["content-length"] = str(len(body))
         headers["X-Request-ID"] = request_id
+        headers["X-API-Version"] = "1.0.0"
 
         return Response(
             content=body,
