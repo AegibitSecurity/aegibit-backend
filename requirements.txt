@@ -14,3 +14,4 @@ bcrypt==4.2.0
 PyJWT==2.9.0
 sentry-sdk[fastapi]==2.19.2
 slowapi==0.1.9
+boto3==1.35.36

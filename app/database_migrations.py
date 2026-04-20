@@ -119,47 +119,52 @@ def migrate_otp_verifications_table(engine: Engine):
 
 def migrate_audit_logs_table(engine: Engine):
     """
-    Create audit_logs table if it doesn't exist.
+    Create audit_logs table if it doesn't exist, then patch missing columns.
     This table is append-only — never updated or deleted.
     """
     with engine.connect() as conn:
         result = conn.execute(
             text("SELECT name FROM sqlite_master WHERE type='table' AND name='audit_logs'")
         )
-        if result.fetchone():
-            logger.info("Table 'audit_logs' already exists")
+        if not result.fetchone():
+            conn.execute(text("""
+                CREATE TABLE audit_logs (
+                    id                 VARCHAR(36) PRIMARY KEY,
+                    organization_id    VARCHAR(36) NOT NULL,
+                    action_type        VARCHAR(50) NOT NULL,
+                    entity_type        VARCHAR(50) NOT NULL,
+                    entity_id          VARCHAR(36) NOT NULL,
+                    performed_by       VARCHAR(36),
+                    performed_by_email VARCHAR(255),
+                    ip_address         VARCHAR(45),
+                    previous_data      TEXT,
+                    new_data           TEXT,
+                    note               TEXT,
+                    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    row_hash           VARCHAR(64),
+                    prev_hash          VARCHAR(64)
+                )
+            """))
+            conn.execute(text(
+                "CREATE INDEX ix_audit_org_created ON audit_logs(organization_id, created_at)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX ix_audit_entity ON audit_logs(entity_type, entity_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX ix_audit_performed_by ON audit_logs(performed_by)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX ix_audit_action ON audit_logs(action_type)"
+            ))
+            conn.commit()
+            logger.info("Created table 'audit_logs' with hash chain columns and indexes")
             return
 
-        conn.execute(text("""
-            CREATE TABLE audit_logs (
-                id                 VARCHAR(36) PRIMARY KEY,
-                organization_id    VARCHAR(36) NOT NULL,
-                action_type        VARCHAR(50) NOT NULL,
-                entity_type        VARCHAR(50) NOT NULL,
-                entity_id          VARCHAR(36) NOT NULL,
-                performed_by       VARCHAR(36),
-                performed_by_email VARCHAR(255),
-                ip_address         VARCHAR(45),
-                previous_data      TEXT,
-                new_data           TEXT,
-                note               TEXT,
-                created_at         DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """))
-        conn.execute(text(
-            "CREATE INDEX ix_audit_org_created ON audit_logs(organization_id, created_at)"
-        ))
-        conn.execute(text(
-            "CREATE INDEX ix_audit_entity ON audit_logs(entity_type, entity_id)"
-        ))
-        conn.execute(text(
-            "CREATE INDEX ix_audit_performed_by ON audit_logs(performed_by)"
-        ))
-        conn.execute(text(
-            "CREATE INDEX ix_audit_action ON audit_logs(action_type)"
-        ))
-        conn.commit()
-        logger.info("Created table 'audit_logs' with indexes")
+    # Table already exists — add hash chain columns if missing
+    _add_column(engine, "audit_logs", "row_hash",  "VARCHAR(64)")
+    _add_column(engine, "audit_logs", "prev_hash", "VARCHAR(64)")
+    logger.info("audit_logs table migration complete")
 
 
 def run_all_migrations(engine: Engine):

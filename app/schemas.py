@@ -340,6 +340,14 @@ class VariantOption(BaseModel):
 
 # ── Audit Log ────────────────────────────────────────────────────────────────
 
+class AuditChainVerifyResponse(BaseModel):
+    ok: bool
+    total: int
+    verified: int
+    tampered: List[dict] = []
+    checked_at: str
+
+
 class AuditLogResponse(BaseModel):
     id: str
     organization_id: str

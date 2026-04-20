@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 from app.routes import (
     deals, tasks, notifications, upload, dashboard,
     websocket, models, auth, verification, email_verification, otp_secure,
+    admin,
 )
 
 
@@ -186,6 +187,7 @@ app.include_router(models.router,             prefix="/api/v1")
 app.include_router(otp_secure.router,         prefix="/api/v1")           # /api/v1/send-otp, etc.
 app.include_router(verification.router,       prefix="/api/v1/phone")     # /api/v1/phone/check-customer, etc.
 app.include_router(email_verification.router, prefix="/api/v1/email-otp") # /api/v1/email-otp/send-email-otp, etc.
+app.include_router(admin.router,              prefix="/api/v1")           # /api/v1/admin/...
 
 
 # ── Organizations (inline — too small to merit its own router file) ───────────

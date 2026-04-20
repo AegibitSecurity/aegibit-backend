@@ -287,6 +287,13 @@ class AuditLog(Base):
     new_data            = Column(JSON, nullable=True)
     note                = Column(Text, nullable=True)
     created_at          = Column(DateTime, default=_utcnow)
+    # ── Tamper-proof hash chain ───────────────────────────────────────────────
+    # row_hash  = SHA256(all fields of this row + prev_hash)
+    # prev_hash = row_hash of the immediately preceding entry for this org
+    # Genesis entry uses prev_hash = "0" * 64
+    # Any modification to data makes row_hash mismatch → tampering detected
+    row_hash            = Column(String(64), nullable=True)
+    prev_hash           = Column(String(64), nullable=True)
 
 
 # ── Customers ───────────────────────────────────────────────────────────────
