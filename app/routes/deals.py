@@ -18,9 +18,10 @@ Role access:
   variants     → SALES+
 """
 
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
-from typing import Annotated
+from typing import Annotated, Optional
 from pydantic import ValidationError
 
 from app.database import get_db
@@ -32,6 +33,7 @@ from app.services.deal_service import (
     DealValidationError,
     DealNotFoundError,
 )
+from app.services.audit_service import get_audit_logs
 from app.schemas import (
     DealAnalyzeRequest,
     DealAnalyzeResponse,
@@ -41,6 +43,7 @@ from app.schemas import (
     DealEventResponse,
     ApprovalRequest,
     ValidationErrorResponse,
+    AuditLogResponse,
 )
 
 router = APIRouter(tags=["deals"])
@@ -251,50 +254,90 @@ def list_variants(
     return deal_service.get_variants(db, auth.org_id)
 
 
-# ── SOFT DELETE ENDPOINTS (ADMIN ONLY) ───────────────────────────────────────
+# ── SOFT DELETE / RESTORE / AUDIT (ADMIN ONLY) ───────────────────────────────
 
 @router.delete("/deals/{deal_id}")
-def soft_delete_deal(
+@limiter.limit("10/minute")
+async def soft_delete_deal(
+    request: Request,
     deal_id: str,
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
-    Soft delete a deal (ADMIN only).
-    Sets is_deleted=True without removing the record.
+    Soft-delete a deal (ADMIN only).
+    Record is NEVER removed — recoverable via /deals/{id}/restore.
     """
     if not auth.is_admin():
-        raise HTTPException(
-            status_code=403,
-            detail="Only ADMIN can delete deals"
-        )
+        raise HTTPException(status_code=403, detail="Only ADMIN can delete deals")
 
-    success = deal_service.soft_delete_deal(db, deal_id, auth.user_id)
+    ip = request.client.host if request.client else None
+    success = deal_service.soft_delete_deal(
+        db, deal_id,
+        org_id=auth.org_id,
+        deleted_by=auth.user_id,
+        deleted_by_email=auth.email,
+        ip_address=ip,
+    )
     if not success:
         raise HTTPException(status_code=404, detail="Deal not found or already deleted")
 
-    return {"success": True, "message": "Deal moved to trash"}
+    return {"success": True, "message": "Deal moved to trash — recoverable by admin"}
 
 
 @router.post("/deals/{deal_id}/restore")
-def restore_deal(
+async def restore_deal(
+    request: Request,
     deal_id: str,
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Restore a soft-deleted deal (ADMIN only).
-    """
+    """Restore a soft-deleted deal (ADMIN only)."""
     if not auth.is_admin():
-        raise HTTPException(
-            status_code=403,
-            detail="Only ADMIN can restore deals"
-        )
+        raise HTTPException(status_code=403, detail="Only ADMIN can restore deals")
 
-    success = deal_service.restore_deal(db, deal_id)
+    ip = request.client.host if request.client else None
+    success = deal_service.restore_deal(
+        db, deal_id,
+        org_id=auth.org_id,
+        restored_by=auth.user_id,
+        restored_by_email=auth.email,
+        ip_address=ip,
+    )
     if not success:
         raise HTTPException(status_code=404, detail="Deal not found or not deleted")
 
-    return {"success": True, "message": "Deal restored"}
+    return {"success": True, "message": "Deal restored successfully"}
+
+
+# ── GET /audit-logs ──────────────────────────────────────────────────────────
+
+@router.get("/audit-logs", response_model=list[AuditLogResponse])
+def list_audit_logs(
+    entity_type: Optional[str] = Query(None, description="Filter: deal | user | pricing"),
+    entity_id: Optional[str] = Query(None, description="Specific entity ID"),
+    action_type: Optional[str] = Query(None, description="Filter: DELETE | RESTORE | APPROVE | REJECT | CREATE"),
+    limit: int = Query(100, le=500),
+    offset: int = Query(0, ge=0),
+    auth: AuthContext = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Full audit trail for the organization (ADMIN only).
+    Every DELETE, RESTORE, CREATE, APPROVE, REJECT action is logged here.
+    """
+    if not auth.is_admin():
+        raise HTTPException(status_code=403, detail="Only ADMIN can view audit logs")
+
+    logs = get_audit_logs(
+        db,
+        org_id=auth.org_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        action_type=action_type,
+        limit=limit,
+        offset=offset,
+    )
+    return [AuditLogResponse.model_validate(l) for l in logs]
 
 

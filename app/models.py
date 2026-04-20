@@ -259,6 +259,36 @@ class DealEvent(Base):
     deal = relationship("Deal", back_populates="events")
 
 
+# ── Audit Log (org-wide, all entities) ──────────────────────────────────────
+
+class AuditLog(Base):
+    """
+    Immutable org-wide audit log.
+    Every CREATE / UPDATE / DELETE / RESTORE / APPROVE / REJECT action is written
+    here — independently of DealEvent — so nothing can be silently erased.
+    """
+    __tablename__ = "audit_logs"
+    __table_args__ = (
+        Index("ix_audit_org_created",   "organization_id", "created_at"),
+        Index("ix_audit_entity",        "entity_type", "entity_id"),
+        Index("ix_audit_performed_by",  "performed_by"),
+        Index("ix_audit_action",        "action_type"),
+    )
+
+    id                  = Column(String(36), primary_key=True, default=_uuid)
+    organization_id     = Column(String(36), ForeignKey("organizations.id"), nullable=False)
+    action_type         = Column(String(50), nullable=False)   # CREATE DELETE RESTORE APPROVE REJECT UPDATE
+    entity_type         = Column(String(50), nullable=False)   # deal pricing user
+    entity_id           = Column(String(36), nullable=False)
+    performed_by        = Column(String(36), ForeignKey("users.id"), nullable=True)
+    performed_by_email  = Column(String(255), nullable=True)   # denormalized — survives user deletion
+    ip_address          = Column(String(45), nullable=True)    # IPv6-safe
+    previous_data       = Column(JSON, nullable=True)
+    new_data            = Column(JSON, nullable=True)
+    note                = Column(Text, nullable=True)
+    created_at          = Column(DateTime, default=_utcnow)
+
+
 # ── Customers ───────────────────────────────────────────────────────────────
 
 class Customer(Base):

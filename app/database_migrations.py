@@ -117,6 +117,51 @@ def migrate_otp_verifications_table(engine: Engine):
     logger.info("otp_verifications table migration complete")
 
 
+def migrate_audit_logs_table(engine: Engine):
+    """
+    Create audit_logs table if it doesn't exist.
+    This table is append-only — never updated or deleted.
+    """
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name='audit_logs'")
+        )
+        if result.fetchone():
+            logger.info("Table 'audit_logs' already exists")
+            return
+
+        conn.execute(text("""
+            CREATE TABLE audit_logs (
+                id                 VARCHAR(36) PRIMARY KEY,
+                organization_id    VARCHAR(36) NOT NULL,
+                action_type        VARCHAR(50) NOT NULL,
+                entity_type        VARCHAR(50) NOT NULL,
+                entity_id          VARCHAR(36) NOT NULL,
+                performed_by       VARCHAR(36),
+                performed_by_email VARCHAR(255),
+                ip_address         VARCHAR(45),
+                previous_data      TEXT,
+                new_data           TEXT,
+                note               TEXT,
+                created_at         DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX ix_audit_org_created ON audit_logs(organization_id, created_at)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX ix_audit_entity ON audit_logs(entity_type, entity_id)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX ix_audit_performed_by ON audit_logs(performed_by)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX ix_audit_action ON audit_logs(action_type)"
+        ))
+        conn.commit()
+        logger.info("Created table 'audit_logs' with indexes")
+
+
 def run_all_migrations(engine: Engine):
     """
     Run all database migrations.
@@ -127,6 +172,7 @@ def run_all_migrations(engine: Engine):
     try:
         migrate_deals_table(engine)
         migrate_otp_verifications_table(engine)
+        migrate_audit_logs_table(engine)
         logger.info("Database migrations completed successfully")
     except Exception as e:
         logger.error(f"Database migration failed: {e}")

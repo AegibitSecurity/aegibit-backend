@@ -338,6 +338,26 @@ class VariantOption(BaseModel):
     total_bh: Optional[float] = None
 
 
+# ── Audit Log ────────────────────────────────────────────────────────────────
+
+class AuditLogResponse(BaseModel):
+    id: str
+    organization_id: str
+    action_type: str
+    entity_type: str
+    entity_id: str
+    performed_by: Optional[str] = None
+    performed_by_email: Optional[str] = None
+    ip_address: Optional[str] = None
+    previous_data: Optional[dict] = None
+    new_data: Optional[dict] = None
+    note: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 # ── Deal Events (Audit) ───────────────────────────────────────────────────────
 
 class DealEventResponse(BaseModel):

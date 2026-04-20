@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from thefuzz import fuzz
 
 from app.models import Deal, DealEvent, CarModel, OrgConfig, Task, Customer
+from app.services.audit_service import log_action, Action, Entity
 from app.schemas import (
     DealCreateRequest,
     DealAnalyzeRequest,
@@ -513,7 +514,9 @@ async def create_deal(
 
 async def approve_gm(db: Session, org_id: str, deal_id: str) -> DealResponse:
     """GM approves a deal. If discount exceeds director limit, escalate."""
-    deal = db.query(Deal).filter(Deal.id == deal_id, Deal.organization_id == org_id).first()
+    deal = db.query(Deal).filter(
+        Deal.id == deal_id, Deal.organization_id == org_id, Deal.is_deleted == False
+    ).first()
     if not deal:
         raise DealNotFoundError("Deal not found")
 
@@ -578,7 +581,9 @@ async def approve_director(db: Session, org_id: str, deal_id: str) -> DealRespon
 
 async def reject_deal(db: Session, org_id: str, deal_id: str, actor_role: str = "GM") -> DealResponse:
     """Reject a deal at any stage."""
-    deal = db.query(Deal).filter(Deal.id == deal_id, Deal.organization_id == org_id).first()
+    deal = db.query(Deal).filter(
+        Deal.id == deal_id, Deal.organization_id == org_id, Deal.is_deleted == False
+    ).first()
     if not deal:
         raise DealNotFoundError("Deal not found")
 
@@ -627,26 +632,91 @@ def get_deleted_deals(db: Session, org_id: str, limit: int = 50) -> list[DealRes
     return [DealResponse.model_validate(d) for d in deals]
 
 
-def soft_delete_deal(db: Session, deal_id: str, deleted_by: str) -> bool:
-    """Soft delete a deal by setting is_deleted=True."""
-    deal = db.query(Deal).filter(Deal.id == deal_id, Deal.is_deleted == False).first()
+def soft_delete_deal(
+    db: Session,
+    deal_id: str,
+    org_id: str,
+    deleted_by: str,
+    deleted_by_email: str = None,
+    ip_address: str = None,
+) -> bool:
+    """
+    Soft-delete a deal.  Sets is_deleted=True — record is NEVER removed.
+    Enforces org isolation: admins from other orgs cannot delete this deal.
+    Writes both a DealEvent and an AuditLog entry in the same transaction.
+    """
+    deal = db.query(Deal).filter(
+        Deal.id == deal_id,
+        Deal.organization_id == org_id,   # ← org isolation (security fix)
+        Deal.is_deleted == False,
+    ).first()
     if not deal:
         return False
+
+    previous = {
+        "status": deal.status,
+        "customer_name": deal.customer_name,
+        "variant": deal.variant,
+        "final_price": deal.final_price,
+        "created_at": deal.created_at.isoformat() if deal.created_at else None,
+    }
+
     deal.is_deleted = True
     deal.deleted_at = datetime.now(timezone.utc)
     deal.deleted_by = deleted_by
+
+    _log_event(db, deal.id, "DEAL_DELETED", metadata={"deleted_by": deleted_by})
+    log_action(
+        db,
+        org_id=org_id,
+        action_type=Action.DELETE,
+        entity_type=Entity.DEAL,
+        entity_id=deal_id,
+        performed_by=deleted_by,
+        performed_by_email=deleted_by_email,
+        ip_address=ip_address,
+        previous_data=previous,
+    )
     db.commit()
     return True
 
 
-def restore_deal(db: Session, deal_id: str) -> bool:
-    """Restore a soft-deleted deal."""
-    deal = db.query(Deal).filter(Deal.id == deal_id, Deal.is_deleted == True).first()
+def restore_deal(
+    db: Session,
+    deal_id: str,
+    org_id: str,
+    restored_by: str,
+    restored_by_email: str = None,
+    ip_address: str = None,
+) -> bool:
+    """
+    Restore a soft-deleted deal.
+    Enforces org isolation and writes full audit trail.
+    """
+    deal = db.query(Deal).filter(
+        Deal.id == deal_id,
+        Deal.organization_id == org_id,   # ← org isolation (security fix)
+        Deal.is_deleted == True,
+    ).first()
     if not deal:
         return False
+
     deal.is_deleted = False
     deal.deleted_at = None
     deal.deleted_by = None
+
+    _log_event(db, deal.id, "DEAL_RESTORED", metadata={"restored_by": restored_by})
+    log_action(
+        db,
+        org_id=org_id,
+        action_type=Action.RESTORE,
+        entity_type=Entity.DEAL,
+        entity_id=deal_id,
+        performed_by=restored_by,
+        performed_by_email=restored_by_email,
+        ip_address=ip_address,
+        note=f"Restored by {restored_by_email or restored_by}",
+    )
     db.commit()
     return True
 
