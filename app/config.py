@@ -4,7 +4,6 @@ Application configuration — reads from environment variables with sensible def
 
 import logging
 import os
-import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +32,11 @@ def _cors_origins() -> list[str]:
 def _jwt_secret() -> str:
     secret = os.getenv("JWT_SECRET", "")
     if not secret:
-        # Generate a temporary secret — sessions will not survive restarts.
-        # Set JWT_SECRET env var in production.
-        generated = secrets.token_hex(32)
-        logger.warning(
-            "JWT_SECRET env var is not set. Using a temporary secret — "
-            "all sessions will be invalidated on every server restart. "
-            "Set JWT_SECRET in your environment or .env file."
+        raise RuntimeError(
+            "JWT_SECRET environment variable is not set. "
+            "Generate one with: python -c \"import secrets; print(secrets.token_hex(64))\" "
+            "and set it in your Render environment variables."
         )
-        return generated
     return secret
 
 
@@ -55,6 +50,19 @@ class Settings:
     JWT_SECRET: str = _jwt_secret()
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRY_HOURS: int = int(os.getenv("JWT_EXPIRY_HOURS", "24"))
+
+    # ── Sentry ────────────────────────────────────────────────────────────────
+    # Set SENTRY_DSN in production. Empty string disables Sentry.
+    SENTRY_DSN: str = os.getenv("SENTRY_DSN", "")
+
+    # ── Cookie auth ───────────────────────────────────────────────────────────
+    # COOKIE_SECURE=false   in development (http://localhost)
+    # COOKIE_SECURE=true    in production  (https://)
+    COOKIE_SECURE: bool = os.getenv("COOKIE_SECURE", "false").lower() == "true"
+    # COOKIE_SAMESITE=lax   for same-site deployments
+    # COOKIE_SAMESITE=none  for cross-origin (Vercel frontend + Render backend)
+    # When samesite=none, COOKIE_SECURE MUST be true (browsers enforce this)
+    COOKIE_SAMESITE: str = os.getenv("COOKIE_SAMESITE", "lax")
 
 
 settings = Settings()

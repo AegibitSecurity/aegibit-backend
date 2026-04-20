@@ -26,7 +26,7 @@ from typing import Optional
 
 import bcrypt
 import jwt
-from fastapi import Header, HTTPException, Depends
+from fastapi import Request, HTTPException, Depends
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -172,14 +172,17 @@ class AuthContext:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def get_current_user(
-    authorization: str = Header(..., description="Bearer JWT token"),
+    request: Request,
     db: Session = Depends(get_db),
 ) -> AuthContext:
     """
-    FastAPI dependency — extracts JWT from Authorization header and returns AuthContext.
+    FastAPI dependency — extracts JWT from the HTTP-only cookie and returns AuthContext.
+
+    Token is read exclusively from the `access_token` cookie (set at login).
+    JS code cannot access this cookie — eliminates XSS token theft.
 
     Validates:
-      1. Authorization header is present with Bearer scheme
+      1. access_token cookie is present
       2. JWT is valid and not expired
       3. User exists in database and is active
       4. Organization exists
@@ -189,14 +192,9 @@ async def get_current_user(
         def my_endpoint(auth: AuthContext = Depends(get_current_user)):
             # auth.user_id, auth.org_id, auth.role, auth.role_name
     """
-    # Validate Authorization header format
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid Authorization header. Use: Bearer <token>",
-        )
-
-    token = authorization[7:]  # Strip "Bearer "
+    token = request.cookies.get("access_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
     # Decode JWT
     payload = decode_access_token(token)
