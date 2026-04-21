@@ -149,7 +149,8 @@ class Deal(Base):
         Index("ix_deal_org_created", "organization_id", "created_at"),
         Index("ix_deal_customer", "customer_id"),
         Index("ix_deal_is_deleted", "is_deleted"),
-        UniqueConstraint("customer_phone", name="uq_deal_customer_phone"),
+        # Partial unique index (uq_deal_customer_phone_active) enforced at DB level
+        # via migration — excludes soft-deleted rows so phones can be reused after deletion
     )
 
     id = Column(String(36), primary_key=True, default=_uuid)

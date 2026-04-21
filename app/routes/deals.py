@@ -21,6 +21,7 @@ Role access:
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from typing import Annotated, Optional
 from pydantic import ValidationError
 
@@ -130,6 +131,14 @@ async def create(
         )
     except (DealValidationError, DealNotFoundError, ValueError) as e:
         _handle_deal_error(e)
+    except IntegrityError as e:
+        orig = str(getattr(e, "orig", e))
+        if "uq_deal_customer_phone" in orig or "customer_phone" in orig:
+            raise HTTPException(
+                status_code=409,
+                detail="Phone number already has an active deal. Each phone can only be used once.",
+            )
+        raise HTTPException(status_code=409, detail="Duplicate entry — please check your data.")
     except Exception as e:
         import traceback
         print(f"UNEXPECTED ERROR in create-deal: {e}")

@@ -198,6 +198,44 @@ def migrate_deal_branch(engine: Engine) -> None:
     logger.info("deals branch_id migration complete")
 
 
+def migrate_phone_constraint(engine: Engine) -> None:
+    """
+    Replace the full UNIQUE constraint on deals.customer_phone with a partial
+    unique index that excludes soft-deleted rows.
+
+    Problem: uq_deal_customer_phone applies to ALL rows, so soft-deleted deals
+    permanently block that phone from ever being reused — even after restore.
+
+    Fix: drop the constraint, create a partial index instead so that only
+    non-deleted deals block the phone.
+
+    Idempotent — safe to run on every startup.
+    """
+    if not _table_exists(engine, "deals"):
+        return
+
+    with engine.begin() as conn:
+        # Drop the full unique constraint if it still exists
+        conn.execute(text("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'uq_deal_customer_phone'
+                ) THEN
+                    ALTER TABLE deals DROP CONSTRAINT uq_deal_customer_phone;
+                END IF;
+            END$$
+        """))
+        # Create the partial unique index (idempotent via IF NOT EXISTS)
+        conn.execute(text("""
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_deal_customer_phone_active
+            ON deals(customer_phone)
+            WHERE is_deleted = FALSE AND customer_phone IS NOT NULL
+        """))
+    logger.info("Phone constraint migrated to partial unique index")
+
+
 def migrate_indexes(engine: Engine) -> None:
     """
     Create missing performance indexes using CREATE INDEX IF NOT EXISTS
@@ -259,6 +297,7 @@ def run_all_migrations(engine: Engine) -> None:
         migrate_deals_table(engine)
         migrate_user_branch(engine)
         migrate_deal_branch(engine)
+        migrate_phone_constraint(engine) # replace full unique with partial (soft-delete safe)
         migrate_otp_verifications_table(engine)
         migrate_audit_logs_table(engine)
         migrate_indexes(engine)
