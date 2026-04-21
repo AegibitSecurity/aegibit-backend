@@ -31,7 +31,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
-from app.models import User, Organization
+from app.models import User, Organization, Branch
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -93,20 +93,30 @@ def verify_password(plain: str, hashed: str) -> bool:
 # JWT Token Management
 # ─────────────────────────────────────────────────────────────────────────────
 
-def create_access_token(user_id: str, org_id: str, role: str) -> str:
+def create_access_token(
+    user_id: str,
+    org_id: str,
+    role: str,
+    branch_id: Optional[str] = None,
+    is_head_office: bool = False,
+) -> str:
     """
-    Create a JWT access token with user identity and role.
+    Create a JWT access token with user identity, role, and branch.
 
     Claims:
-      sub   → user ID
-      org   → organization ID
-      role  → user role string
-      exp   → expiration timestamp
+      sub        → user ID
+      org        → organization ID
+      role       → user role string
+      branch     → branch ID (nullable)
+      is_hq      → True if head-office branch
+      exp        → expiration timestamp
     """
     payload = {
         "sub": user_id,
         "org": org_id,
         "role": role,
+        "branch": branch_id,
+        "is_hq": is_head_office,
         "exp": datetime.now(timezone.utc) + timedelta(hours=settings.JWT_EXPIRY_HOURS),
         "iat": datetime.now(timezone.utc),
     }
@@ -141,17 +151,21 @@ class AuthContext:
     The result of authentication — available in every endpoint via Depends().
 
     Attributes:
-        user_id    User ID from JWT
-        org_id     Organization ID from JWT
-        role       Parsed Role enum
-        role_name  Original role string (uppercase)
-        email      User email from database
+        user_id        User ID from JWT
+        org_id         Organization ID from JWT
+        role           Parsed Role enum
+        role_name      Original role string (uppercase)
+        email          User email from database
+        branch_id      Branch ID (None for unassigned users)
+        is_head_office True if user belongs to the head-office branch
     """
     user_id: str
     org_id: str
     role: Role
     role_name: str
     email: str
+    branch_id: Optional[str] = None
+    is_head_office: bool = False
 
     def has_role(self, minimum: Role) -> bool:
         """Check if user's role meets or exceeds the minimum."""
@@ -165,6 +179,10 @@ class AuthContext:
 
     def is_gm(self) -> bool:
         return self.role >= Role.GM
+
+    def sees_all_branches(self) -> bool:
+        """Head-office users and ADMINs see data across all branches."""
+        return self.is_head_office or self.is_admin()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -232,12 +250,22 @@ async def get_current_user(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    # Load branch info from DB (authoritative — not from JWT, JWT may be stale)
+    branch_id: Optional[str] = user.branch_id
+    is_head_office = False
+    if branch_id:
+        branch = db.query(Branch).filter(Branch.id == branch_id).first()
+        if branch:
+            is_head_office = branch.is_head_office
+
     return AuthContext(
         user_id=user_id,
         org_id=org_id,
         role=role,
         role_name=role.name,
         email=user.email,
+        branch_id=branch_id,
+        is_head_office=is_head_office,
     )
 
 

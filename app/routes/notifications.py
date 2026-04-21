@@ -100,6 +100,10 @@ def upcoming_deliveries(
     cutoff     = now_naive + timedelta(days=days)
     today_date = now_naive.date()
 
+    branch_filter = []
+    if not auth.sees_all_branches() and auth.branch_id:
+        branch_filter = [Deal.branch_id == auth.branch_id]
+
     deals = (
         db.query(Deal)
         .filter(
@@ -107,8 +111,9 @@ def upcoming_deliveries(
             Deal.is_deleted      == False,
             Deal.status          == "APPROVED",
             Deal.delivery_date   != None,
-            Deal.delivery_date   >= now_naive,   # exclude overdue/past
+            Deal.delivery_date   >= now_naive,
             Deal.delivery_date   <= cutoff,
+            *branch_filter,
         )
         .order_by(Deal.delivery_date.asc())
         # Select only the columns this endpoint actually uses

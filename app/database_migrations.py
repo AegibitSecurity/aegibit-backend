@@ -160,6 +160,44 @@ def migrate_audit_logs_table(engine: Engine) -> None:
     logger.info("audit_logs migration complete")
 
 
+def migrate_branches_table(engine: Engine) -> None:
+    """Create branches table if absent, then patch missing columns (idempotent)."""
+    if not _table_exists(engine, "branches"):
+        with engine.begin() as conn:
+            conn.execute(text("""
+                CREATE TABLE branches (
+                    id              VARCHAR(36)  PRIMARY KEY,
+                    organization_id VARCHAR(36)  NOT NULL REFERENCES organizations(id),
+                    name            VARCHAR(255) NOT NULL,
+                    is_head_office  BOOLEAN      NOT NULL DEFAULT FALSE,
+                    created_at      TIMESTAMP    DEFAULT NOW()
+                )
+            """))
+            conn.execute(text(
+                "CREATE INDEX ix_branch_org ON branches(organization_id)"
+            ))
+        logger.info("Created table 'branches' with index")
+    else:
+        _add_column(engine, "branches", "is_head_office", "BOOLEAN NOT NULL DEFAULT FALSE")
+        logger.info("branches migration complete")
+
+
+def migrate_user_branch(engine: Engine) -> None:
+    """Add branch_id FK to users table (idempotent)."""
+    if not _table_exists(engine, "users"):
+        return
+    _add_column(engine, "users", "branch_id", "VARCHAR(36) REFERENCES branches(id)")
+    logger.info("users branch_id migration complete")
+
+
+def migrate_deal_branch(engine: Engine) -> None:
+    """Add branch_id FK to deals table (idempotent)."""
+    if not _table_exists(engine, "deals"):
+        return
+    _add_column(engine, "deals", "branch_id", "VARCHAR(36) REFERENCES branches(id)")
+    logger.info("deals branch_id migration complete")
+
+
 def migrate_indexes(engine: Engine) -> None:
     """
     Create missing performance indexes using CREATE INDEX IF NOT EXISTS
@@ -174,6 +212,20 @@ def migrate_indexes(engine: Engine) -> None:
                                Powers pending task counts without scanning completed tasks.
     """
     with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_branch_org_name
+            ON branches(organization_id, name)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_user_branch
+            ON users(branch_id)
+            WHERE branch_id IS NOT NULL
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_deal_branch
+            ON deals(branch_id)
+            WHERE branch_id IS NOT NULL
+        """))
         conn.execute(text("""
             CREATE INDEX IF NOT EXISTS ix_deal_delivery_org
             ON deals(organization_id, delivery_date)
@@ -191,6 +243,7 @@ def migrate_indexes(engine: Engine) -> None:
     logger.info("Performance indexes verified / created")
 
 
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def run_all_migrations(engine: Engine) -> None:
@@ -202,7 +255,10 @@ def run_all_migrations(engine: Engine) -> None:
     """
     logger.info("Running database migrations…")
     try:
+        migrate_branches_table(engine)   # must run before user/deal branch FKs
         migrate_deals_table(engine)
+        migrate_user_branch(engine)
+        migrate_deal_branch(engine)
         migrate_otp_verifications_table(engine)
         migrate_audit_logs_table(engine)
         migrate_indexes(engine)

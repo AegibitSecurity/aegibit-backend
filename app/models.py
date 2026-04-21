@@ -5,6 +5,7 @@ Tables
 ------
 organizations       Multi-tenant org container
 org_config           Per-org approval thresholds
+branches             Physical branches (head office + showrooms)
 car_models           Pricing data ingested from Excel
 deals                Core deal records with margin / risk / decision
 tasks                Approval tasks routed to GM / Director
@@ -28,7 +29,6 @@ from sqlalchemy import (
     Integer,
     UniqueConstraint,
 )
-# Using generic types for SQLite compatibility (no PostgreSQL dialect needed)
 from sqlalchemy.orm import relationship
 
 from app.database import Base
@@ -40,6 +40,25 @@ def _uuid():
 
 def _utcnow():
     return datetime.now(timezone.utc)
+
+
+# ── Branches ─────────────────────────────────────────────────────────────────
+
+class Branch(Base):
+    __tablename__ = "branches"
+    __table_args__ = (
+        Index("ix_branch_org", "organization_id"),
+    )
+
+    id              = Column(String(36), primary_key=True, default=_uuid)
+    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False)
+    name            = Column(String(255), nullable=False)
+    is_head_office  = Column(Boolean, default=False, nullable=False)
+    created_at      = Column(DateTime, default=_utcnow)
+
+    organization    = relationship("Organization", backref="branches")
+    users           = relationship("User", back_populates="branch")
+    deals           = relationship("Deal", back_populates="branch")
 
 
 # ── Users ────────────────────────────────────────────────────────────────────
@@ -55,13 +74,13 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(20), nullable=False)  # ADMIN | GM | DIRECTOR | SALES
-    organization_id = Column(
-        String(36), ForeignKey("organizations.id"), nullable=False
-    )
+    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False)
+    branch_id = Column(String(36), ForeignKey("branches.id"), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=_utcnow)
 
     organization = relationship("Organization", backref="users")
+    branch = relationship("Branch", back_populates="users")
 
 
 # ── Organizations ────────────────────────────────────────────────────────────
@@ -134,9 +153,8 @@ class Deal(Base):
     )
 
     id = Column(String(36), primary_key=True, default=_uuid)
-    organization_id = Column(
-        String(36), ForeignKey("organizations.id"), nullable=False
-    )
+    organization_id = Column(String(36), ForeignKey("organizations.id"), nullable=False)
+    branch_id = Column(String(36), ForeignKey("branches.id"), nullable=True)
     customer_id = Column(
         String(36), ForeignKey("customers.id"), nullable=True
     )
@@ -198,6 +216,7 @@ class Deal(Base):
     deleted_by = Column(String(36), ForeignKey("users.id"), nullable=True)
 
     organization = relationship("Organization", back_populates="deals")
+    branch = relationship("Branch", back_populates="deals")
     customer = relationship("Customer", back_populates="deals")
     tasks = relationship("Task", back_populates="deal")
     events = relationship("DealEvent", back_populates="deal", order_by="DealEvent.created_at")

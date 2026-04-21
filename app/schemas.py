@@ -17,8 +17,25 @@ class UserResponse(BaseModel):
     email: str
     role: str
     organization_id: str
+    branch_id: Optional[str] = None
+    branch_name: Optional[str] = None
     is_active: bool
     created_at: datetime
+
+    @classmethod
+    def from_orm_with_branch(cls, user) -> "UserResponse":
+        """Build response including branch name from the relationship."""
+        data = {
+            "id": user.id,
+            "email": user.email,
+            "role": user.role,
+            "organization_id": user.organization_id,
+            "branch_id": user.branch_id,
+            "branch_name": user.branch.name if user.branch else None,
+            "is_active": user.is_active,
+            "created_at": user.created_at,
+        }
+        return cls(**data)
 
     class Config:
         from_attributes = True
@@ -45,6 +62,7 @@ class CreateUserRequest(BaseModel):
     password: str
     role: str  # GM | DIRECTOR | SALES (never ADMIN)
     organization_id: str
+    branch_id: Optional[str] = None
 
     @validator('role')
     def validate_role(cls, v):
@@ -206,6 +224,8 @@ class DealCreateRequest(BaseModel):
 class DealResponse(BaseModel):
     id: str
     organization_id: str
+    branch_id: Optional[str] = None
+    branch_name: Optional[str] = None
     customer_id: Optional[str] = None
     salesperson_id: Optional[str] = None
     customer_name: str

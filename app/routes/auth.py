@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.limiter import limiter
-from app.models import User, Organization
+from app.models import User, Organization, Branch
 from app.auth import (
     AuthContext,
     Role,
@@ -67,7 +67,12 @@ def login(
     if not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    token = create_access_token(user.id, user.organization_id, user.role)
+    branch = db.query(Branch).filter(Branch.id == user.branch_id).first() if user.branch_id else None
+    token = create_access_token(
+        user.id, user.organization_id, user.role,
+        branch_id=user.branch_id,
+        is_head_office=branch.is_head_office if branch else False,
+    )
 
     # SameSite=none requires Secure=true (enforced by browsers).
     # When COOKIE_SAMESITE=none in production, ensure COOKIE_SECURE=true as well.
@@ -86,9 +91,7 @@ def login(
         path="/",
     )
 
-    # Include token in response body for native/mobile clients (Capacitor).
-    # Web clients use the cookie above and ignore this field.
-    return LoginResponse(user=UserResponse.model_validate(user), access_token=token)
+    return LoginResponse(user=UserResponse.from_orm_with_branch(user), access_token=token)
 
 
 # ── Logout ────────────────────────────────────────────────────────────────────
@@ -117,7 +120,7 @@ def get_me(auth: AuthContext = Depends(get_current_user), db: Session = Depends(
     user = db.query(User).filter(User.id == auth.user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return user
+    return UserResponse.from_orm_with_branch(user)
 
 
 # ── Create User (ADMIN only) ─────────────────────────────────────────────────
@@ -143,7 +146,6 @@ def create_user(
         )
 
     # SECURITY: always use the admin's own org — never trust org_id from the request body.
-    # This prevents an ADMIN from Org-A from creating users inside Org-B.
     target_org_id = auth.org_id
 
     existing = db.query(User).filter(User.email == body.email).first()
@@ -153,17 +155,29 @@ def create_user(
             detail=f"User with email '{body.email}' already exists",
         )
 
+    # Validate branch belongs to same org
+    branch_id = None
+    if body.branch_id:
+        branch = db.query(Branch).filter(
+            Branch.id == body.branch_id,
+            Branch.organization_id == target_org_id,
+        ).first()
+        if not branch:
+            raise HTTPException(status_code=400, detail="Branch not found in your organization")
+        branch_id = branch.id
+
     user = User(
         email=body.email,
         password_hash=hash_password(body.password),
         role=body.role,
         organization_id=target_org_id,
+        branch_id=branch_id,
         is_active=True,
     )
     db.add(user)
     db.commit()
     db.refresh(user)
-    return user
+    return UserResponse.from_orm_with_branch(user)
 
 
 # ── List Users (ADMIN only) ──────────────────────────────────────────────────
@@ -174,12 +188,13 @@ def list_users(
     db: Session = Depends(get_db),
 ):
     """List all users in the admin's organization. ADMIN only."""
-    return (
+    users = (
         db.query(User)
         .filter(User.organization_id == auth.org_id)
         .order_by(User.created_at.desc())
         .all()
     )
+    return [UserResponse.from_orm_with_branch(u) for u in users]
 
 
 # ── Toggle User Active Status (ADMIN only) ───────────────────────────────────
@@ -204,7 +219,7 @@ def toggle_user_status(
     user.is_active = not user.is_active
     db.commit()
     db.refresh(user)
-    return user
+    return UserResponse.from_orm_with_branch(user)
 
 
 # ── Change Password ──────────────────────────────────────────────────────────
@@ -260,7 +275,13 @@ def switch_org(
 
     _log.info("SWITCH_ORG admin=%s from=%s to=%s", auth.user_id, auth.org_id, target_org_id)
 
-    new_token = create_access_token(auth.user_id, target_org_id, auth.role_name)
+    user = db.query(User).filter(User.id == auth.user_id).first()
+    branch = db.query(Branch).filter(Branch.id == user.branch_id).first() if user and user.branch_id else None
+    new_token = create_access_token(
+        auth.user_id, target_org_id, auth.role_name,
+        branch_id=user.branch_id if user else None,
+        is_head_office=branch.is_head_office if branch else False,
+    )
 
     samesite = settings.COOKIE_SAMESITE
     secure = settings.COOKIE_SECURE
@@ -277,15 +298,10 @@ def switch_org(
         path="/",
     )
 
-    user = db.query(User).filter(User.id == auth.user_id).first()
-    # Return updated user profile with the target org embedded so the frontend
-    # can update its stored user object and reflect the org change instantly.
-    user_data = UserResponse.model_validate(user)
-    # Override org in the response so frontend localStorage matches new JWT
-    user_dict = user_data.model_dump()
+    # Build user response with branch name, override org to target org
+    user_dict = UserResponse.from_orm_with_branch(user).model_dump()
     user_dict["organization_id"] = target_org_id
-    from app.schemas import UserResponse as UR
-    patched_user = UR(**user_dict)
+    patched_user = UserResponse(**user_dict)
     return LoginResponse(user=patched_user, access_token=new_token)
 
 

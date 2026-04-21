@@ -31,20 +31,27 @@ _CACHE_TTL = 30.0  # seconds
 _cache: dict[str, tuple[float, dict]] = {}
 
 
-def _cache_get(org_id: str) -> dict | None:
-    entry = _cache.get(org_id)
+def _cache_key(org_id: str, branch_id: str | None) -> str:
+    return f"{org_id}:{branch_id or 'all'}"
+
+
+def _cache_get(org_id: str, branch_id: str | None) -> dict | None:
+    key = _cache_key(org_id, branch_id)
+    entry = _cache.get(key)
     if entry and (time.monotonic() - entry[0]) < _CACHE_TTL:
         return entry[1]
     return None
 
 
-def _cache_set(org_id: str, data: dict) -> None:
-    _cache[org_id] = (time.monotonic(), data)
+def _cache_set(org_id: str, branch_id: str | None, data: dict) -> None:
+    _cache[_cache_key(org_id, branch_id)] = (time.monotonic(), data)
 
 
 def invalidate_dashboard_cache(org_id: str) -> None:
-    """Call this from deal/approval mutation routes to force a fresh read."""
-    _cache.pop(org_id, None)
+    """Evict all cached entries for this org (all branches)."""
+    keys_to_evict = [k for k in _cache if k.startswith(f"{org_id}:")]
+    for k in keys_to_evict:
+        _cache.pop(k, None)
 
 
 # ── Route ─────────────────────────────────────────────────────────────────────
@@ -54,14 +61,19 @@ def summary(
     auth: AuthContext = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    cached = _cache_get(auth.org_id)
+    effective_branch_id = None if auth.sees_all_branches() else auth.branch_id
+    cached = _cache_get(auth.org_id, effective_branch_id)
     if cached:
         return ORJSONResponse(cached)
 
     today = date.today()
 
+    # Base filter: org + not deleted, optionally scoped to branch
+    base_filter = [Deal.organization_id == auth.org_id, Deal.is_deleted == False]
+    if effective_branch_id:
+        base_filter.append(Deal.branch_id == effective_branch_id)
+
     # ── Query 1: all deal metrics in a single aggregation ─────────────────────
-    # Replaces 7 separate .count()/.scalar() calls that each round-tripped the DB.
     stats = (
         db.query(
             func.count().label("total"),
@@ -83,26 +95,18 @@ def summary(
                 0,
             ).label("revenue_today"),
         )
-        .filter(
-            Deal.organization_id == auth.org_id,
-            Deal.is_deleted == False,
-        )
+        .filter(*base_filter)
         .one()
     )
 
     # ── Query 2: pending task counts in a single join ─────────────────────────
-    # Replaces 2 separate Task queries each with a Deal join.
     tasks = (
         db.query(
             func.count(case((Task.assigned_to_role == "GM",       1))).label("gm"),
             func.count(case((Task.assigned_to_role == "DIRECTOR", 1))).label("director"),
         )
         .join(Deal, Task.deal_id == Deal.id)
-        .filter(
-            Deal.organization_id == auth.org_id,
-            Deal.is_deleted == False,
-            Task.status == "PENDING",
-        )
+        .filter(*base_filter, Task.status == "PENDING")
         .one()
     )
 
@@ -118,5 +122,5 @@ def summary(
         "pending_director_tasks": tasks.director,
     }
 
-    _cache_set(auth.org_id, result)
+    _cache_set(auth.org_id, effective_branch_id, result)
     return ORJSONResponse(result)

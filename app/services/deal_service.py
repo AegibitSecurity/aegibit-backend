@@ -15,7 +15,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from thefuzz import fuzz
 
-from app.models import Deal, DealEvent, CarModel, OrgConfig, Task, Customer
+from app.models import Deal, DealEvent, CarModel, OrgConfig, Task, Customer, User
 from app.services.audit_service import log_action, Action, Entity
 from app.schemas import (
     DealCreateRequest,
@@ -427,8 +427,15 @@ async def create_deal(
     )
 
     # ── 7. Persist deal ───────────────────────────────────────────────────────
+    # Inherit branch from the salesperson who created the deal
+    salesperson_branch_id = None
+    if salesperson_id:
+        sp = db.query(User).filter(User.id == salesperson_id).first()
+        salesperson_branch_id = sp.branch_id if sp else None
+
     deal = Deal(
         organization_id=org_id,
+        branch_id=salesperson_branch_id,
         customer_id=customer_id,
         salesperson_id=salesperson_id,
         customer_name=req.customer_name.strip(),
@@ -617,11 +624,19 @@ async def reject_deal(db: Session, org_id: str, deal_id: str, actor_role: str = 
 # Queries
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_deals(db: Session, org_id: str, status: str = None, limit: int = 50) -> list[DealResponse]:
-    """Fetch non-deleted deals for an org, optionally filtered by status."""
+def get_deals(
+    db: Session,
+    org_id: str,
+    status: str = None,
+    limit: int = 50,
+    branch_id: str = None,
+) -> list[DealResponse]:
+    """Fetch non-deleted deals for an org, optionally filtered by status and branch."""
     q = db.query(Deal).filter(Deal.organization_id == org_id, Deal.is_deleted == False)
     if status:
         q = q.filter(Deal.status == status.upper())
+    if branch_id:
+        q = q.filter(Deal.branch_id == branch_id)
     deals = q.order_by(Deal.created_at.desc()).limit(limit).all()
     return [DealResponse.model_validate(d) for d in deals]
 

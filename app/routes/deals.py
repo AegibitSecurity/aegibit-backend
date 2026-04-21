@@ -197,7 +197,8 @@ def list_deals(
     db: Session = Depends(get_db),
 ):
     """List recent deals for the organization, optionally filtered by status."""
-    return deal_service.get_deals(db, auth.org_id, status=status)
+    branch_id = None if auth.sees_all_branches() else auth.branch_id
+    return deal_service.get_deals(db, auth.org_id, status=status, branch_id=branch_id)
 
 
 # ── GET /deals/deleted — MUST be before /deals/{deal_id} to avoid shadowing ──
