@@ -65,6 +65,21 @@ def _cors_origins() -> list[str]:
     ]
 
 
+def _database_url() -> str:
+    url = os.getenv("DATABASE_URL", "")
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL environment variable is not set. "
+            "Add it in your Render → Environment settings. "
+            "Example: postgresql://user:pass@host:5432/dbname"
+        )
+    # Render / Heroku / some tools emit 'postgres://' — SQLAlchemy 1.4+ requires
+    # 'postgresql://' for the psycopg2 dialect.
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return url
+
+
 def _jwt_secret() -> str:
     secret = os.getenv("JWT_SECRET", "")
     if not secret:
@@ -82,7 +97,7 @@ class Settings:
     # ── Core ──────────────────────────────────────────────────────────────────
     APP_VERSION: str       = "1.0.0"
     ENVIRONMENT: str       = os.getenv("ENVIRONMENT", "development")
-    DATABASE_URL: str      = os.getenv("DATABASE_URL", "sqlite:///./aegibit_flow.db")
+    DATABASE_URL: str      = _database_url()
     CORS_ORIGINS: list[str] = _cors_origins()
     HOST: str              = os.getenv("HOST", "0.0.0.0")
     PORT: int              = int(os.getenv("PORT", "8000"))

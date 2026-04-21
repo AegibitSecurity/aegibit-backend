@@ -11,6 +11,7 @@ Architecture:
 """
 
 from contextlib import asynccontextmanager
+import asyncio
 import logging
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -76,10 +77,36 @@ class RequestSizeLimitMiddleware(BaseHTTPMiddleware):
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
+async def _wait_for_db(retries: int = 5, delay: float = 3.0) -> None:
+    """
+    Retry DB connectivity on startup so a brief Supabase / Render cold-start
+    blip doesn't crash the process before it can handle requests.
+    Raises the last exception only after all retries are exhausted.
+    """
+    from sqlalchemy import text as _text
+    last_exc: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            with engine.connect() as conn:
+                conn.execute(_text("SELECT 1"))
+            logger.info("Database reachable (attempt %d/%d)", attempt, retries)
+            return
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "Database not ready (attempt %d/%d): %s — retrying in %.0fs",
+                attempt, retries, exc, delay,
+            )
+            if attempt < retries:
+                await asyncio.sleep(delay)
+    raise RuntimeError(f"Database unreachable after {retries} attempts") from last_exc
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: run migrations, create tables, seed. Shutdown: no-op."""
+    """Startup: verify DB, run migrations, create tables, seed. Shutdown: no-op."""
     logger.info("Starting AEGIBIT Flow %s [%s]", settings.APP_VERSION, settings.ENVIRONMENT)
+    await _wait_for_db(retries=5, delay=3.0)
     run_all_migrations(engine)
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()

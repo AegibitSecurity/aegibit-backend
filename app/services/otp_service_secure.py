@@ -45,12 +45,12 @@ MAX_VERIFY_ATTEMPTS = 5       # Max 5 verification attempts before lock
 
 
 def _now() -> datetime:
-    """Get current datetime (naive for SQLite compatibility)."""
+    """Naive UTC datetime — compatible with TIMESTAMP WITHOUT TIME ZONE columns."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _expires_at(minutes: int) -> datetime:
-    """Get expiry datetime (naive for SQLite compatibility)."""
+    """Naive UTC expiry — compatible with TIMESTAMP WITHOUT TIME ZONE columns."""
     return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).replace(tzinfo=None)
 
 
