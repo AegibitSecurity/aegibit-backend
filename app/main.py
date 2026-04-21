@@ -19,7 +19,7 @@ from sentry_sdk.integrations.starlette import StarletteIntegration
 
 from fastapi import FastAPI, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, ORJSONResponse
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -126,7 +126,7 @@ app = FastAPI(
     description="Real-time dealership deal decision engine",
     version="1.0.0",
     lifespan=lifespan,
-    # OpenAPI docs only show /api/v1 routes
+    default_response_class=ORJSONResponse,  # faster JSON serialisation via orjson
     docs_url="/api/v1/docs",
     redoc_url="/api/v1/redoc",
     openapi_url="/api/v1/openapi.json",

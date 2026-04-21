@@ -7,13 +7,15 @@ GET   /notifications                    List latest notifications (unread first)
 GET   /notifications/unread-count       Get count of unread notifications
 POST  /notifications/{id}/read          Mark one notification as read
 POST  /notifications/mark-all-read      Mark all notifications as read
+GET   /notifications/upcoming-deliveries Approved deals with delivery in next N days
 
 Role access: SALES+ (all authenticated users)
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import ORJSONResponse
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -79,54 +81,78 @@ def upcoming_deliveries(
 ):
     """
     Return approved deals whose delivery_date falls within the next N days.
-    Strictly scoped to auth.org_id — never returns another tenant's data.
+
+    Delivery logic (correct):
+      - Uses naive UTC datetimes to match the TIMESTAMP WITHOUT TIME ZONE column.
+      - days_remaining is calculated via calendar date subtraction, NOT
+        timedelta.days — that was the root bug (timedelta.days counts 24-hour
+        periods, not calendar days, so a delivery tomorrow morning at 08:00
+        with now at 23:00 would be 9 hours = delta.days=0 = "today").
+      - Past delivery dates (overdue) are excluded from the window.
+
+    Scoped strictly to auth.org_id — never leaks another tenant's data.
 
     Response:
       [{ message, delivery_date, days_remaining, customer, deal_id, details }]
     """
-    now    = datetime.now(timezone.utc)
-    cutoff = now + timedelta(days=days)
+    # Use naive UTC to match TIMESTAMP WITHOUT TIME ZONE columns in PostgreSQL.
+    now_naive  = datetime.utcnow()
+    cutoff     = now_naive + timedelta(days=days)
+    today_date = now_naive.date()
 
     deals = (
         db.query(Deal)
         .filter(
-            Deal.organization_id == auth.org_id,   # ← always from JWT
-            Deal.is_deleted       == False,
-            Deal.status           == "APPROVED",
-            Deal.delivery_date    != None,
-            Deal.delivery_date    >= now,
-            Deal.delivery_date    <= cutoff,
+            Deal.organization_id == auth.org_id,
+            Deal.is_deleted      == False,
+            Deal.status          == "APPROVED",
+            Deal.delivery_date   != None,
+            Deal.delivery_date   >= now_naive,   # exclude overdue/past
+            Deal.delivery_date   <= cutoff,
         )
         .order_by(Deal.delivery_date.asc())
+        # Select only the columns this endpoint actually uses
+        .with_entities(
+            Deal.id,
+            Deal.customer_name,
+            Deal.variant,
+            Deal.delivery_date,
+            Deal.final_price,
+            Deal.mobile,
+            Deal.customer_phone,
+            Deal.chassis_no,
+            Deal.status,
+            Deal.rse_name,
+        )
         .all()
     )
 
     result = []
-    for d in deals:
-        # Naive delivery_date stored without tz info in SQLite dev; handle both
-        dd = d.delivery_date
-        if dd.tzinfo is None:
-            dd = dd.replace(tzinfo=timezone.utc)
-        delta      = dd - now
-        days_left  = max(delta.days, 0)
-        day_label  = "today" if days_left == 0 else (
-                     "tomorrow" if days_left == 1 else f"in {days_left} days"
-                     )
+    for row in deals:
+        # Calendar-day difference — correct regardless of time-of-day.
+        # Example: delivery 2024-04-22 08:00, now 2024-04-21 23:00
+        #   timedelta.days  = 0  (only 9 hours elapsed) ← OLD BUG
+        #   date subtraction = 1 (22 - 21 = 1)          ← CORRECT
+        days_left = max((row.delivery_date.date() - today_date).days, 0)
+
+        if   days_left == 0: day_label = "today"
+        elif days_left == 1: day_label = "tomorrow"
+        else:                day_label = f"in {days_left} days"
 
         result.append({
-            "message":        f"{d.customer_name} — delivery {day_label} ({d.variant})",
-            "delivery_date":  dd.isoformat(),
+            "message":        f"{row.customer_name} — delivery {day_label} ({row.variant})",
+            "delivery_date":  row.delivery_date.isoformat(),
             "days_remaining": days_left,
-            "customer":       d.customer_name,
-            "deal_id":        d.id,
+            "customer":       row.customer_name,
+            "deal_id":        row.id,
             "details": {
-                "variant":      d.variant,
-                "amount":       d.final_price,
-                "mobile":       d.mobile or d.customer_phone,
-                "chassis_no":   d.chassis_no,
-                "status":       d.status,
-                "salesperson":  d.rse_name,
+                "variant":     row.variant,
+                "amount":      row.final_price,
+                "mobile":      row.mobile or row.customer_phone,
+                "chassis_no":  row.chassis_no,
+                "status":      row.status,
+                "salesperson": row.rse_name,
             },
         })
 
-    return result
+    return ORJSONResponse(result)

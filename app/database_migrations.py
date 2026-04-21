@@ -160,6 +160,37 @@ def migrate_audit_logs_table(engine: Engine) -> None:
     logger.info("audit_logs migration complete")
 
 
+def migrate_indexes(engine: Engine) -> None:
+    """
+    Create missing performance indexes using CREATE INDEX IF NOT EXISTS
+    (PostgreSQL 9.5+, idempotent).
+
+    Indexes added:
+      ix_deal_delivery_org   — partial index on (org, delivery_date) WHERE delivery_date IS NOT NULL
+                               Powers the upcoming-deliveries query (was a full table scan).
+      ix_deal_org_deleted    — (org, is_deleted, status) composite
+                               Powers the dashboard aggregation query.
+      ix_task_pending        — partial index on (deal_id) WHERE status = 'PENDING'
+                               Powers pending task counts without scanning completed tasks.
+    """
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_deal_delivery_org
+            ON deals(organization_id, delivery_date)
+            WHERE delivery_date IS NOT NULL AND is_deleted = FALSE
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_deal_org_deleted_status
+            ON deals(organization_id, is_deleted, status)
+        """))
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS ix_task_pending
+            ON tasks(deal_id)
+            WHERE status = 'PENDING'
+        """))
+    logger.info("Performance indexes verified / created")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def run_all_migrations(engine: Engine) -> None:
@@ -174,6 +205,7 @@ def run_all_migrations(engine: Engine) -> None:
         migrate_deals_table(engine)
         migrate_otp_verifications_table(engine)
         migrate_audit_logs_table(engine)
+        migrate_indexes(engine)
         logger.info("All migrations completed successfully")
     except Exception:
         logger.exception("Migration error — app will continue, but schema may be incomplete")

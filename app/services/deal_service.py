@@ -48,6 +48,7 @@ from app.services.pricing_engine import (
     PricingBreakdown,
     PricingError,
 )
+from app.routes.dashboard import invalidate_dashboard_cache
 
 logger = logging.getLogger(__name__)
 
@@ -497,6 +498,7 @@ async def create_deal(
     # ── 10. Commit everything ─────────────────────────────────────────────────
     db.commit()
     db.refresh(deal)
+    invalidate_dashboard_cache(org_id)
 
     # ── 11. Notify (DB + WebSocket in one call) ────────────────────────────────
     await notify_deal_created(db, org_id, _deal_to_dict(deal), pg.decision)
@@ -532,6 +534,7 @@ async def approve_gm(db: Session, org_id: str, deal_id: str) -> DealResponse:
         create_task(db, deal.id, "DIRECTOR")
         _log_event(db, deal.id, "ESCALATED_TO_DIRECTOR", actor_role="GM")
         db.commit()
+        invalidate_dashboard_cache(org_id)
 
         await notify_gm_escalated(db, org_id, _deal_to_dict(deal))
         await notify_task_completed(db, org_id, deal.id, "GM")
@@ -542,6 +545,7 @@ async def approve_gm(db: Session, org_id: str, deal_id: str) -> DealResponse:
         complete_task(db, deal.id, "GM")
         _log_event(db, deal.id, "APPROVED_BY_GM", actor_role="GM")
         db.commit()
+        invalidate_dashboard_cache(org_id)
 
         await notify_gm_approved(db, org_id, _deal_to_dict(deal))
         await notify_task_completed(db, org_id, deal.id, "GM")
@@ -571,6 +575,7 @@ async def approve_director(db: Session, org_id: str, deal_id: str) -> DealRespon
     complete_task(db, deal.id, "DIRECTOR")
     _log_event(db, deal.id, "APPROVED_BY_DIRECTOR", actor_role="DIRECTOR")
     db.commit()
+    invalidate_dashboard_cache(org_id)
 
     await notify_director_approved(db, org_id, _deal_to_dict(deal))
     await notify_task_completed(db, org_id, deal.id, "DIRECTOR")
@@ -600,6 +605,7 @@ async def reject_deal(db: Session, org_id: str, deal_id: str, actor_role: str = 
 
     _log_event(db, deal.id, "DEAL_REJECTED", actor_role=actor_role)
     db.commit()
+    invalidate_dashboard_cache(org_id)
 
     await notify_deal_rejected(db, org_id, _deal_to_dict(deal), actor_role)
 
@@ -678,6 +684,7 @@ def soft_delete_deal(
         previous_data=previous,
     )
     db.commit()
+    invalidate_dashboard_cache(org_id)
     return True
 
 
@@ -722,22 +729,28 @@ def restore_deal(
 
 
 def get_variants(db: Session, org_id: str):
-    """Return active variants for autocomplete."""
-    cars = (
-        db.query(CarModel)
+    """Return active variants for autocomplete — selects only required columns."""
+    rows = (
+        db.query(
+            CarModel.variant,
+            CarModel.ex_showroom_price,
+            CarModel.total_5yr,
+            CarModel.total_15yr,
+            CarModel.total_bh,
+        )
         .filter(CarModel.organization_id == org_id, CarModel.is_active == True)
         .order_by(CarModel.variant)
         .all()
     )
     return [
         {
-            "variant": c.variant,
-            "ex_showroom_price": c.ex_showroom_price,
-            "total_5yr": c.total_5yr,
-            "total_15yr": c.total_15yr,
-            "total_bh": c.total_bh,
+            "variant":           r.variant,
+            "ex_showroom_price": r.ex_showroom_price,
+            "total_5yr":         r.total_5yr,
+            "total_15yr":        r.total_15yr,
+            "total_bh":          r.total_bh,
         }
-        for c in cars
+        for r in rows
     ]
 
 
