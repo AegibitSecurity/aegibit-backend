@@ -142,9 +142,9 @@ def create_user(
             detail="Cannot create ADMIN users via API. Use seed script instead.",
         )
 
-    org = db.query(Organization).filter(Organization.id == body.organization_id).first()
-    if not org:
-        raise HTTPException(status_code=400, detail="Organization not found")
+    # SECURITY: always use the admin's own org — never trust org_id from the request body.
+    # This prevents an ADMIN from Org-A from creating users inside Org-B.
+    target_org_id = auth.org_id
 
     existing = db.query(User).filter(User.email == body.email).first()
     if existing:
@@ -157,7 +157,7 @@ def create_user(
         email=body.email,
         password_hash=hash_password(body.password),
         role=body.role,
-        organization_id=body.organization_id,
+        organization_id=target_org_id,
         is_active=True,
     )
     db.add(user)
@@ -229,6 +229,64 @@ def change_password(
     db.commit()
 
     return {"message": "Password updated successfully"}
+
+
+# ── Switch Organization (ADMIN only — issues a new JWT) ─────────────────────
+
+@router.post("/auth/switch-org", response_model=LoginResponse)
+def switch_org(
+    response: Response,
+    body: dict,
+    auth: AuthContext = Depends(require_admin()),
+    db: Session = Depends(get_db),
+):
+    """
+    Re-scope the session to a different organization.
+    ADMIN only.  Issues a new signed JWT bound to the target org.
+    The old JWT (and its cookie) is replaced immediately.
+
+    Body: { "org_id": "<uuid>" }
+    """
+    import logging
+    _log = logging.getLogger(__name__)
+
+    target_org_id = body.get("org_id", "").strip()
+    if not target_org_id:
+        raise HTTPException(status_code=400, detail="org_id is required")
+
+    org = db.query(Organization).filter(Organization.id == target_org_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    _log.info("SWITCH_ORG admin=%s from=%s to=%s", auth.user_id, auth.org_id, target_org_id)
+
+    new_token = create_access_token(auth.user_id, target_org_id, auth.role_name)
+
+    samesite = settings.COOKIE_SAMESITE
+    secure = settings.COOKIE_SECURE
+    if samesite.lower() == "none" and not secure:
+        secure = True
+
+    response.set_cookie(
+        key="access_token",
+        value=new_token,
+        httponly=True,
+        secure=secure,
+        samesite=samesite,
+        max_age=settings.JWT_EXPIRY_HOURS * 3600,
+        path="/",
+    )
+
+    user = db.query(User).filter(User.id == auth.user_id).first()
+    # Return updated user profile with the target org embedded so the frontend
+    # can update its stored user object and reflect the org change instantly.
+    user_data = UserResponse.model_validate(user)
+    # Override org in the response so frontend localStorage matches new JWT
+    user_dict = user_data.model_dump()
+    user_dict["organization_id"] = target_org_id
+    from app.schemas import UserResponse as UR
+    patched_user = UR(**user_dict)
+    return LoginResponse(user=patched_user, access_token=new_token)
 
 
 # ── Get creatable roles (for frontend dropdown) ──────────────────────────────

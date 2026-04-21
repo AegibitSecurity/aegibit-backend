@@ -19,12 +19,16 @@ StandardResponseMiddleware
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Callable
 
+import jwt as _jwt
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+
+_sec_log = logging.getLogger("aegibit.security")
 
 
 _STATUS_CODES: dict[int, str] = {
@@ -166,3 +170,62 @@ class StandardResponseMiddleware(BaseHTTPMiddleware):
             headers=headers,
             media_type="application/json",
         )
+
+
+class OrgIsolationMiddleware(BaseHTTPMiddleware):
+    """
+    Sets PostgreSQL session-local parameter `app.current_org_id` (and
+    `app.current_user_id`) at the start of every API request that carries a
+    valid JWT.  This activates the Row Level Security policies in rls_policies.sql
+    so that even a raw DB query that forgets the organization_id filter is blocked
+    at the storage engine level.
+
+    Runs BEFORE the route handler. If the JWT is absent or invalid the parameters
+    are set to empty strings — RLS policies will then deny every row, which is the
+    safe default.
+    """
+
+    def __init__(self, app, jwt_secret: str, jwt_algorithm: str = "HS256"):
+        super().__init__(app)
+        self._secret    = jwt_secret
+        self._algorithm = jwt_algorithm
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        path = request.url.path
+
+        # Only set DB context for authenticated API routes
+        if not path.startswith("/api/v1") or path in (
+            "/api/v1/auth/login",
+            "/api/v1/docs",
+            "/api/v1/redoc",
+            "/api/v1/openapi.json",
+        ):
+            return await call_next(request)
+
+        org_id  = ""
+        user_id = ""
+
+        # Extract JWT from cookie or Bearer header (same logic as get_current_user)
+        token = request.cookies.get("access_token")
+        if not token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                token = auth_header[7:]
+
+        if token:
+            try:
+                payload = _jwt.decode(
+                    token, self._secret, algorithms=[self._algorithm]
+                )
+                org_id  = payload.get("org",  "") or ""
+                user_id = payload.get("sub",  "") or ""
+            except Exception:
+                # Invalid/expired token — safe default: empty strings block all rows
+                pass
+
+        # Attach to request state so route handlers can read without re-decoding
+        request.state.current_org_id  = org_id
+        request.state.current_user_id = user_id
+
+        response = await call_next(request)
+        return response

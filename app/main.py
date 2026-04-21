@@ -27,7 +27,7 @@ from app.config import settings
 from app.database import engine, Base, SessionLocal, get_db
 from app.seed import seed_database
 from app.database_migrations import run_all_migrations
-from app.middleware import StandardResponseMiddleware
+from app.middleware import StandardResponseMiddleware, OrgIsolationMiddleware
 from app.limiter import limiter
 
 logger = logging.getLogger(__name__)
@@ -129,6 +129,11 @@ app.add_middleware(
 
 app.add_middleware(StandardResponseMiddleware)
 app.add_middleware(RequestSizeLimitMiddleware)
+app.add_middleware(
+    OrgIsolationMiddleware,
+    jwt_secret=settings.JWT_SECRET,
+    jwt_algorithm=settings.JWT_ALGORITHM,
+)
 
 # ── Health checks (no auth, no envelope) ─────────────────────────────────────
 
@@ -202,6 +207,13 @@ def list_organizations(
     db: Session = Depends(get_db),
     auth: AuthContext = Depends(get_current_user),
 ):
-    """Return all organizations for the frontend org switcher (authenticated)."""
-    orgs = db.query(Organization).order_by(Organization.name).all()
+    """
+    Return organizations visible to this user.
+    ADMIN: all orgs (needed for the org switcher / support workflow).
+    Everyone else: only their own org — cannot enumerate other tenants.
+    """
+    if auth.is_admin():
+        orgs = db.query(Organization).order_by(Organization.name).all()
+    else:
+        orgs = db.query(Organization).filter(Organization.id == auth.org_id).all()
     return [{"id": o.id, "name": o.name} for o in orgs]
